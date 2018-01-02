@@ -226,7 +226,7 @@ ipc_message(QData,MessType,Encoder) ->
 -spec ipc_recv(gen_tcp:socket()) -> 
 		  {ok,qObj()} | {decoding_error,binary()} | {receive_error,Reason} when Reason :: closed | inet:posix().
 
-ipc_recv(Socket) -> ipc_recv(Socket,1000).
+ipc_recv(Socket) -> ipc_recv(Socket,10000000).
 
 
 %% @doc receive with timeout
@@ -239,7 +239,13 @@ ipc_recv(Socket,Timeout) ->
 			MessLen = decode_unsigned(RawLength, Endian),
 			case ipc_read(<<>>,Socket, MessLen-8, Timeout) of 
 			{ok,Data} -> 
-				{N,Obj} = decode(Data,Endian),
+				%%io:format("IPC Data: ~p~n", [Data]),
+				{N,Obj} = try
+				  decode(Data,Endian)
+				catch
+				  true -> {0,Data}
+				end,
+				%%io:format("Decoded result: ~p~n", [N]),
 				Res = if N>0 -> {ok,Obj};
 						 true -> {decoding_error,Data}
 					  end,
@@ -313,7 +319,7 @@ respond(Socket,Data) ->
 		  
 sync(Socket,QData) -> 
 	case gen_tcp:send(Socket, ipc_message(QData,1)) of
-		ok -> ipc_recv(Socket,1000);
+		ok -> ipc_recv(Socket,100000);
 		Error -> {send_error,Error}
 	end.
 
@@ -641,13 +647,17 @@ decode(<<?_KJ,Data:8/binary,_/binary>>,Endian) -> {9,{long,decode_signed(Data,8,
 decode(<<?KJ,_,LL:4/little-signed-integer-unit:8,Data/binary>>,1) -> 
 	{6+LL*8,{long_list,[ X || <<X:8/little-signed-integer-unit:8>> <= binary:part(Data,0,LL*8)]}};
 
-decode(<<?_KE,0,0,192,255,_/binary>>,1) -> {5,{real,null}}; 
+decode(<<?_KE,0,0,192,255,_/binary>>,1) -> {5,{real,null}}; %% 0Ne
+decode(<<?_KE,0,0,128,127,_/binary>>,1) -> {5,{real,null}}; %% 0We
+decode(<<?_KE,0,0,128,255,_/binary>>,1) -> {5,{real,null}}; %% -0We
 decode(<<?_KE,Data:4/binary,_/binary>>,1) -> <<R:4/little-signed-float-unit:8>> = Data, {5,{real,R}};
 decode(<<?KE,_,LL:4/little-signed-integer-unit:8,Data/binary>>,1) -> 
 	{6+LL*4,{real_list,[ bin_to_real_little(X) || <<X:4/binary>> <= Data ]}};
 
 
-decode(<<?_KF,0,0,0,0,0,0,248,255,_/binary>>,1) -> {9,{float,null}};
+decode(<<?_KF,0,0,0,0,0,0,248,255,_/binary>>,1) -> {9,{float,null}}; %% 0n
+decode(<<?_KF,0,0,0,0,0,0,240,127,_/binary>>,1) -> {9,{float,null}}; %% 0w
+decode(<<?_KF,0,0,0,0,0,0,240,255,_/binary>>,1) -> {9,{float,null}}; %% -0w
 decode(<<?_KF,Data:8/binary,_/binary>>,1) -> <<R:8/little-signed-float-unit:8>> = Data, {9,{float,R}};
 decode(<<?KF,_,LL:4/little-signed-integer-unit:8,Data/binary>>,1) -> 
 	{6+LL*8,{float_list,[ bin_to_float_little(X) || <<X:8/binary>> <= binary:part(Data,0,LL*8) ]}};
@@ -845,6 +855,9 @@ byte_bool(<<0>>) -> false;
 byte_bool(<<1>>) -> true.
 
 %% converts 8 byte binary to either float or atom null
+bin_to_float_little(<<0,0,0,0,0,0,240,255>>) -> null;
+bin_to_float_little(<<0,0,0,0,0,0,240,127>>) -> null;
+bin_to_float_little(<<0,0,0,0,0,0,248,127>>) -> null;
 bin_to_float_little(<<0,0,0,0,0,0,248,255>>) -> null;
 bin_to_float_little(<<X:8/little-signed-float-unit:8>>) -> X.
 
